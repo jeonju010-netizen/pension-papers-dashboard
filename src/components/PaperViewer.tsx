@@ -8,6 +8,7 @@ import {
   CATEGORY_COLORS,
 } from "@/types/paper";
 import { CountryFlag } from "./CountryFlag";
+import { PaperMetaBadges } from "./PaperMetaBadges";
 import { getCountryNameKo, resolveCountryCode } from "@/lib/country";
 
 interface PaperViewerProps {
@@ -124,6 +125,12 @@ export function PaperViewer({ paper, onPaperUpdate }: PaperViewerProps) {
             {paper.subCategory &&
               ` · ${SUB_CATEGORY_LABELS[paper.subCategory]}`}
           </span>
+          <PaperMetaBadges
+            citationCount={paper.citationCount}
+            originalUrl={paper.originalUrl}
+            sourceSite={paper.sourceSite}
+            size="md"
+          />
           {countryCode && (
             <span className="text-xs text-slate-500">
               {getCountryNameKo(countryCode)}

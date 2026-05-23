@@ -23,6 +23,8 @@ export interface Paper {
   pdfUrl?: string;
   hasAiSummary?: boolean;
   countryCode?: string;
+  citationCount?: number;
+  sourceSite?: string;
 }
 
 export const CATEGORY_LABELS: Record<MainCategory, string> = {

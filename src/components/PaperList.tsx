@@ -11,6 +11,7 @@ import {
 } from "@/types/paper";
 import { AbstractPopup } from "./AbstractPopup";
 import { CountryFlag } from "./CountryFlag";
+import { PaperMetaBadges } from "./PaperMetaBadges";
 
 interface PaperListProps {
   papers: Paper[];
@@ -105,6 +106,11 @@ export function PaperList({
                     </span>
                   )}
                 </span>
+                <PaperMetaBadges
+                  citationCount={paper.citationCount}
+                  originalUrl={paper.originalUrl}
+                  sourceSite={paper.sourceSite}
+                />
                 <span className="text-[10px] text-slate-500">{paper.year}</span>
               </div>
               <h3 className="text-sm font-semibold leading-snug text-slate-100">

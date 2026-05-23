@@ -1,6 +1,13 @@
 import { Paper } from "@/types/paper";
 import { categorizePaper } from "./categorizer";
 import { inferCountryFromText } from "./country";
+import { getSourceSiteLabel } from "./source";
+import {
+  clampYearRange,
+  DEFAULT_YEAR_FROM,
+  FetchPeriod,
+  getDefaultYearTo,
+} from "./period";
 
 const CROSSREF_BASE = "https://api.crossref.org/works";
 const CONTACT_EMAIL =
@@ -33,6 +40,7 @@ interface CrossRefItem {
   abstract?: string;
   URL?: string;
   link?: { URL: string; "content-type"?: string }[];
+  "is-referenced-by-count"?: number;
 }
 
 interface CrossRefResponse {
@@ -80,18 +88,23 @@ function getPdfUrl(item: CrossRefItem): string | undefined {
   return pdf?.URL;
 }
 
-function mapItemToPaper(item: CrossRefItem): Paper | null {
+function mapItemToPaper(
+  item: CrossRefItem,
+  yearFrom: number,
+  yearTo: number
+): Paper | null {
   const title = item.title?.[0]?.replace(/\s+/g, " ").trim();
   if (!title || !item.DOI) return null;
 
   const abstract = item.abstract ? stripHtml(item.abstract) : "";
   const year = getYear(item);
-  if (year === 0) return null;
+  if (year === 0 || year < yearFrom || year > yearTo) return null;
   if (!isRelevant(title, abstract)) return null;
 
   const { category, subCategory } = categorizePaper(title, abstract);
   const id = item.DOI.replace(/^https?:\/\/doi.org\//, "").replace(/\//g, "_");
   const countryCode = inferCountryFromText(`${title} ${abstract}`);
+  const originalUrl = item.URL ?? `https://doi.org/${item.DOI}`;
 
   return {
     id,
@@ -106,20 +119,25 @@ function mapItemToPaper(item: CrossRefItem): Paper | null {
     abstract: abstract || "Abstract not available for this paper.",
     abstractKo: abstract || "이 논문의 초록 정보가 제공되지 않습니다.",
     summaryKo: "",
-    originalUrl: item.URL ?? `https://doi.org/${item.DOI}`,
+    originalUrl,
     pdfUrl: getPdfUrl(item),
     hasAiSummary: false,
     countryCode,
+    citationCount: item["is-referenced-by-count"] ?? 0,
+    sourceSite: getSourceSiteLabel(originalUrl),
   };
 }
 
-async function fetchQuery(query: string): Promise<CrossRefItem[]> {
+async function fetchQuery(
+  query: string,
+  period: FetchPeriod
+): Promise<CrossRefItem[]> {
   const params = new URLSearchParams({
     query,
     rows: "15",
     sort: "published",
     order: "desc",
-    filter: "from-pub-date:2022,type:journal-article",
+    filter: `from-pub-date:${period.yearFrom},until-pub-date:${period.yearTo},type:journal-article`,
   });
 
   const res = await fetch(`${CROSSREF_BASE}?${params}`, {
@@ -139,8 +157,12 @@ async function fetchQuery(query: string): Promise<CrossRefItem[]> {
   return data.message?.items ?? [];
 }
 
-export async function fetchLatestPapers(): Promise<Paper[]> {
-  const results = await Promise.all(SEARCH_QUERIES.map(fetchQuery));
+export async function fetchLatestPapers(
+  period: FetchPeriod = clampYearRange(DEFAULT_YEAR_FROM, getDefaultYearTo())
+): Promise<Paper[]> {
+  const results = await Promise.all(
+    SEARCH_QUERIES.map((query) => fetchQuery(query, period))
+  );
 
   const seen = new Set<string>();
   const papers: Paper[] = [];
@@ -151,7 +173,7 @@ export async function fetchLatestPapers(): Promise<Paper[]> {
       if (!doi || seen.has(doi)) continue;
       seen.add(doi);
 
-      const paper = mapItemToPaper(item);
+      const paper = mapItemToPaper(item, period.yearFrom, period.yearTo);
       if (paper) papers.push(paper);
     }
   }

@@ -60,13 +60,26 @@ export async function writeSummaryCache(
 export interface PapersCacheEntry {
   fetchedAt: string;
   papers: import("@/types/paper").Paper[];
+  yearFrom?: number;
+  yearTo?: number;
 }
 
 const PAPERS_TTL_MS = 24 * 60 * 60 * 1000;
 
-export async function getCachedPapers(): Promise<PapersCacheEntry | null> {
+export async function getCachedPapers(
+  yearFrom?: number,
+  yearTo?: number
+): Promise<PapersCacheEntry | null> {
   const cached = await readCache<PapersCacheEntry>("papers.json");
   if (!cached) return null;
+
+  if (
+    yearFrom !== undefined &&
+    yearTo !== undefined &&
+    (cached.yearFrom !== yearFrom || cached.yearTo !== yearTo)
+  ) {
+    return null;
+  }
 
   const age = Date.now() - new Date(cached.fetchedAt).getTime();
   if (age > PAPERS_TTL_MS) return null;
@@ -75,11 +88,15 @@ export async function getCachedPapers(): Promise<PapersCacheEntry | null> {
 }
 
 export async function setCachedPapers(
-  papers: import("@/types/paper").Paper[]
+  papers: import("@/types/paper").Paper[],
+  yearFrom?: number,
+  yearTo?: number
 ): Promise<void> {
   await writeCache("papers.json", {
     fetchedAt: new Date().toISOString(),
     papers,
+    yearFrom,
+    yearTo,
   } satisfies PapersCacheEntry);
 }
 

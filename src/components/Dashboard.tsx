@@ -2,7 +2,14 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Paper, MainCategory, SubCategory } from "@/types/paper";
+import {
+  clampYearRange,
+  DEFAULT_YEAR_FROM,
+  filterPapersByYear,
+  getDefaultYearTo,
+} from "@/lib/period";
 import { CategoryFilter } from "./CategoryFilter";
+import { PeriodFilter } from "./PeriodFilter";
 import { PaperList } from "./PaperList";
 import { PaperViewer } from "./PaperViewer";
 
@@ -11,6 +18,8 @@ interface PapersMeta {
   count: number;
   fetchedAt: string;
   message?: string;
+  yearFrom?: number;
+  yearTo?: number;
 }
 
 interface DashboardProps {
@@ -25,6 +34,19 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [yearFrom, setYearFrom] = useState(
+    initialMeta.yearFrom ?? DEFAULT_YEAR_FROM
+  );
+  const [yearTo, setYearTo] = useState(
+    initialMeta.yearTo ?? getDefaultYearTo()
+  );
+  const [appliedPeriod, setAppliedPeriod] = useState(() =>
+    clampYearRange(
+      initialMeta.yearFrom ?? DEFAULT_YEAR_FROM,
+      initialMeta.yearTo ?? getDefaultYearTo()
+    )
+  );
+
   const [activeCategory, setActiveCategory] = useState<MainCategory | "all">(
     "all"
   );
@@ -35,31 +57,56 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
     initialPapers[0]?.id ?? null
   );
 
-  const loadPapers = useCallback(async (refresh = false) => {
-    if (refresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
+  const loadPapers = useCallback(
+    async (refresh = false, period = appliedPeriod) => {
+      if (refresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
 
-    try {
-      const res = await fetch(
-        `/api/papers${refresh ? "?refresh=true" : ""}`
-      );
-      if (!res.ok) throw new Error("논문 목록을 불러오지 못했습니다.");
+      const params = new URLSearchParams({
+        yearFrom: String(period.yearFrom),
+        yearTo: String(period.yearTo),
+      });
+      if (refresh) params.set("refresh", "true");
 
-      const data = await res.json();
-      setPapers(data.papers);
-      setMeta(data.meta);
-      setSelectedId(data.papers[0]?.id ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "알 수 없는 오류");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+      try {
+        const res = await fetch(`/api/papers?${params.toString()}`);
+        if (!res.ok) throw new Error("논문 목록을 불러오지 못했습니다.");
+
+        const data = await res.json();
+        setPapers(data.papers);
+        setMeta(data.meta);
+        setAppliedPeriod(period);
+        setSelectedId(data.papers[0]?.id ?? null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "알 수 없는 오류");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [appliedPeriod]
+  );
+
+  const handleApplyPeriod = () => {
+    const period = clampYearRange(yearFrom, yearTo);
+    setYearFrom(period.yearFrom);
+    setYearTo(period.yearTo);
+    loadPapers(true, period);
+  };
+
+  const papersInPeriod = useMemo(
+    () =>
+      filterPapersByYear(
+        papers,
+        appliedPeriod.yearFrom,
+        appliedPeriod.yearTo
+      ),
+    [papers, appliedPeriod]
+  );
 
   const filteredPapers = useMemo(() => {
-    return papers.filter((p) => {
+    return papersInPeriod.filter((p) => {
       if (activeCategory !== "all" && p.category !== activeCategory)
         return false;
       if (
@@ -70,7 +117,7 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
         return false;
       return true;
     });
-  }, [papers, activeCategory, activeSubCategory]);
+  }, [papersInPeriod, activeCategory, activeSubCategory]);
 
   const selectedPaper = useMemo(() => {
     if (filteredPapers.length === 0) return null;
@@ -83,17 +130,17 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
 
   const counts = useMemo(() => {
     const result: Record<MainCategory | "all", number> = {
-      all: papers.length,
+      all: papersInPeriod.length,
       "asset-allocation": 0,
       "asset-management": 0,
       "risk-management": 0,
       "performance-evaluation": 0,
     };
-    papers.forEach((p) => {
+    papersInPeriod.forEach((p) => {
       result[p.category]++;
     });
     return result;
-  }, [papers]);
+  }, [papersInPeriod]);
 
   const handleCategoryChange = (cat: MainCategory | "all") => {
     setActiveCategory(cat);
@@ -127,12 +174,12 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
       <header className="flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/80 px-6 py-4 backdrop-blur">
         <div>
           <h1 className="text-lg font-bold text-white">
-            글로벌 연기금 운용 논문 대시보드
+            글로벌 연기금 운용 논문 모음 대시보드
           </h1>
           <p className="text-xs text-slate-500">
             {loading
               ? "논문 수집 중..."
-              : `${meta.source === "openalex" || meta.source === "mixed" ? "OpenAlex+CrossRef" : meta.source === "crossref" ? "CrossRef" : meta.source === "cache" ? "캐시" : meta.source} · ${meta.count} papers · ${formatFetchedAt(meta.fetchedAt)}`}
+              : `${appliedPeriod.yearFrom}~${appliedPeriod.yearTo}년 · ${meta.source === "openalex" || meta.source === "mixed" ? "OpenAlex+CrossRef" : meta.source === "crossref" ? "CrossRef" : meta.source === "cache" ? "캐시" : meta.source} · ${papersInPeriod.length} papers · ${formatFetchedAt(meta.fetchedAt)}`}
             {(meta.source === "openalex" ||
               meta.source === "crossref" ||
               meta.source === "mixed") && (
@@ -185,6 +232,14 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
 
       <div className="flex flex-1 overflow-hidden flex-col lg:flex-row">
         <aside className="flex w-full flex-col border-b border-slate-800 lg:w-[380px] lg:shrink-0 lg:border-b-0 lg:border-r">
+          <PeriodFilter
+            yearFrom={yearFrom}
+            yearTo={yearTo}
+            onYearFromChange={setYearFrom}
+            onYearToChange={setYearTo}
+            onApply={handleApplyPeriod}
+            loading={loading || refreshing}
+          />
           <CategoryFilter
             activeCategory={activeCategory}
             activeSubCategory={activeSubCategory}
@@ -196,7 +251,7 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
             <span className="text-xs text-slate-500">
               {loading
                 ? "불러오는 중..."
-                : `${filteredPapers.length}건 · 마우스를 올리면 초록 확인`}
+                : `${filteredPapers.length}건 · ${appliedPeriod.yearFrom}~${appliedPeriod.yearTo}년`}
             </span>
           </div>
           {loading ? (
@@ -204,7 +259,7 @@ export function Dashboard({ initialPapers, initialMeta }: DashboardProps) {
               <div className="flex flex-col items-center gap-3">
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
                 <p className="text-xs text-slate-500">
-                  논문 DB에서 최신 논문 수집 중...
+                  선택한 기간의 논문을 수집 중...
                 </p>
               </div>
             </div>

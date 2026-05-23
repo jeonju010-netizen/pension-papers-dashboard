@@ -5,21 +5,28 @@ import {
   extractCountryFromAuthorships,
   inferCountryFromText,
 } from "./country";
+import { getSourceSiteLabel, enrichPapers } from "./source";
+import {
+  buildYearFilter,
+  clampYearRange,
+  DEFAULT_YEAR_FROM,
+  FetchPeriod,
+  getDefaultYearTo,
+} from "./period";
 
 const OPENALEX_BASE = "https://api.openalex.org/works";
 const API_KEY = process.env.OPENALEX_API_KEY;
 const MAILTO = process.env.OPENALEX_EMAIL ?? "pension-dashboard@example.com";
 
-/** search(유료) 대신 filter list(무료) 사용 */
-const FILTER_QUERIES = [
-  "title.search:pension fund,publication_year:2022|2023|2024|2025|2026",
-  "title.search:pension investment,publication_year:2022|2023|2024|2025|2026",
-  "title.search:pension asset allocation,publication_year:2022|2023|2024|2025|2026",
-  "title.search:pension risk management,publication_year:2022|2023|2024|2025|2026",
-  "title.search:pension performance,publication_year:2022|2023|2024|2025|2026",
-  "title.search:retirement fund investment,publication_year:2022|2023|2024|2025|2026",
-  "title.search:defined benefit pension,publication_year:2022|2023|2024|2025|2026",
-  "title.search:public pension,publication_year:2022|2023|2024|2025|2026",
+const BASE_FILTER_QUERIES = [
+  "title.search:pension fund",
+  "title.search:pension investment",
+  "title.search:pension asset allocation",
+  "title.search:pension risk management",
+  "title.search:pension performance",
+  "title.search:retirement fund investment",
+  "title.search:defined benefit pension",
+  "title.search:public pension",
 ];
 
 interface OpenAlexWork {
@@ -39,6 +46,7 @@ interface OpenAlexWork {
     pdf_url?: string;
   } | null;
   open_access?: { oa_url?: string };
+  cited_by_count?: number;
 }
 
 interface OpenAlexResponse {
@@ -77,14 +85,17 @@ function isRelevant(title: string, abstract: string): boolean {
   return financeCtx.some((kw) => text.includes(kw));
 }
 
-function mapWorkToPaper(work: OpenAlexWork): Paper | null {
+function mapWorkToPaper(
+  work: OpenAlexWork,
+  yearFrom: number,
+  yearTo: number
+): Paper | null {
   const abstract = reconstructAbstract(work.abstract_inverted_index);
   const title = work.title?.replace(/\s+/g, " ").trim();
   if (!title) return null;
 
   const year = work.publication_year ?? new Date().getFullYear();
-  const maxYear = new Date().getFullYear() + 1;
-  if (year < 2022 || year > maxYear) return null;
+  if (year < yearFrom || year > yearTo) return null;
   if (!isRelevant(title, abstract)) return null;
 
   const { category, subCategory } = categorizePaper(title, abstract);
@@ -92,6 +103,12 @@ function mapWorkToPaper(work: OpenAlexWork): Paper | null {
   const countryCode =
     extractCountryFromAuthorships(work.authorships) ??
     inferCountryFromText(`${title} ${abstract}`);
+
+  const originalUrl =
+    work.primary_location?.landing_page_url ??
+    work.doi ??
+    work.open_access?.oa_url ??
+    `https://openalex.org/${oaId}`;
 
   return {
     id: oaId,
@@ -110,16 +127,19 @@ function mapWorkToPaper(work: OpenAlexWork): Paper | null {
     abstract: abstract || "Abstract not available for this paper.",
     abstractKo: abstract || "이 논문의 초록 정보가 제공되지 않습니다.",
     summaryKo: "",
-    originalUrl:
-      work.primary_location?.landing_page_url ??
-      work.doi ??
-      work.open_access?.oa_url ??
-      `https://openalex.org/${oaId}`,
+    originalUrl,
     pdfUrl:
       work.primary_location?.pdf_url ?? work.open_access?.oa_url ?? undefined,
     hasAiSummary: false,
     countryCode,
+    citationCount: work.cited_by_count ?? 0,
+    sourceSite: getSourceSiteLabel(originalUrl),
   };
+}
+
+function buildFilterQueries(yearFrom: number, yearTo: number): string[] {
+  const yearPart = buildYearFilter(yearFrom, yearTo);
+  return BASE_FILTER_QUERIES.map((q) => `${q},publication_year:${yearPart}`);
 }
 
 async function fetchOpenAlexFilter(filter: string): Promise<OpenAlexWork[]> {
@@ -145,8 +165,9 @@ async function fetchOpenAlexFilter(filter: string): Promise<OpenAlexWork[]> {
   return data.results ?? [];
 }
 
-async function fetchFromOpenAlex(): Promise<Paper[]> {
-  const results = await Promise.all(FILTER_QUERIES.map(fetchOpenAlexFilter));
+async function fetchFromOpenAlex(period: FetchPeriod): Promise<Paper[]> {
+  const filters = buildFilterQueries(period.yearFrom, period.yearTo);
+  const results = await Promise.all(filters.map(fetchOpenAlexFilter));
   const seen = new Set<string>();
   const papers: Paper[] = [];
 
@@ -155,7 +176,7 @@ async function fetchFromOpenAlex(): Promise<Paper[]> {
       const id = work.id.replace("https://openalex.org/", "");
       if (seen.has(id)) continue;
       seen.add(id);
-      const paper = mapWorkToPaper(work);
+      const paper = mapWorkToPaper(work, period.yearFrom, period.yearTo);
       if (paper) papers.push(paper);
     }
   }
@@ -164,10 +185,17 @@ async function fetchFromOpenAlex(): Promise<Paper[]> {
 }
 
 /** OpenAlex filter(주) + CrossRef(보조) 병합 수집 */
-export async function fetchLatestPapers(): Promise<Paper[]> {
+export async function fetchLatestPapers(
+  options?: Partial<FetchPeriod>
+): Promise<Paper[]> {
+  const period = clampYearRange(
+    options?.yearFrom ?? DEFAULT_YEAR_FROM,
+    options?.yearTo ?? getDefaultYearTo()
+  );
+
   const [openalexPapers, crossrefPapers] = await Promise.all([
-    fetchFromOpenAlex(),
-    fetchFromCrossRef(),
+    fetchFromOpenAlex(period),
+    fetchFromCrossRef(period),
   ]);
 
   const seen = new Set<string>();
@@ -181,11 +209,13 @@ export async function fetchLatestPapers(): Promise<Paper[]> {
   }
 
   merged.sort((a, b) => b.year - a.year || a.title.localeCompare(b.title));
-  return merged.slice(0, 60);
+  return enrichPapers(merged.slice(0, 60));
 }
 
 export interface FetchMeta {
   source: "openalex" | "crossref" | "mixed" | "fallback";
   count: number;
   fetchedAt: string;
+  yearFrom?: number;
+  yearTo?: number;
 }
